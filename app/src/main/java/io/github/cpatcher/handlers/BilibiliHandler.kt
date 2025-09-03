@@ -1,7 +1,6 @@
 package io.github.cpatcher.handlers
 
 // Stage 1: Android/Java stdlib imports
-import android.os.Bundle
 import java.lang.reflect.Modifier
 
 // Stage 2: Third-party imports (Xposed, DexKit)
@@ -12,7 +11,6 @@ import io.github.cpatcher.arch.IHook
 import io.github.cpatcher.arch.ObfsInfo
 import io.github.cpatcher.arch.call
 import io.github.cpatcher.arch.createObfsTable
-import io.github.cpatcher.arch.findClass
 import io.github.cpatcher.arch.findClassN
 import io.github.cpatcher.arch.hookAllBefore
 import io.github.cpatcher.arch.hookAllConstant
@@ -31,7 +29,6 @@ class BilibiliHandler : IHook() {
         private const val KEY_SPLASH_CLASS = "splash_model_class"
         private const val KEY_ISVALID_METHOD = "is_valid_method"
         private const val KEY_SPLASH_ACTIVITY = "splash_activity_class"
-        private const val KEY_SKIP_METHOD = "skip_splash_method"
         
         // Known stable package patterns
         private const val PACKAGE_BILIBILI_INTL = "com.bstar.intl"
@@ -57,29 +54,36 @@ class BilibiliHandler : IHook() {
                     }
                 }
                 
-                val splashClass = splashModelResults.singleOrNull()
+                // Extract single ClassData from results
+                val splashClass = splashModelResults.firstOrNull()
                     ?: throw IllegalStateException("Splash model class fingerprint failed")
                 
                 // Locate isValid method within Splash class
-                val isValidMethod = bridge.findMethod {
+                val isValidMethodResults = bridge.findMethod {
                     matcher {
                         declaredClass = splashClass.className
                         methodName = "isValid"  // May be obfuscated in future versions
                         returnType = "boolean"
                         paramTypes = listOf()  // No parameters expected
                     }
-                }.singleOrNull() ?: bridge.findMethod {
+                }
+                
+                val isValidMethod = isValidMethodResults.firstOrNull() ?: run {
                     // Fallback: Find by characteristics if name is obfuscated
-                    matcher {
-                        declaredClass = splashClass.className
-                        returnType = "boolean"
-                        paramTypes = listOf()
-                        modifiers = Modifier.PUBLIC
+                    val fallbackResults = bridge.findMethod {
+                        matcher {
+                            declaredClass = splashClass.className
+                            returnType = "boolean"
+                            paramTypes = listOf()
+                            modifiers = Modifier.PUBLIC
+                        }
                     }
-                }.filter { method ->
-                    // Additional heuristic: validation methods often check internal state
-                    method.usingFields.isNotEmpty()
-                }.firstOrNull() ?: throw IllegalStateException("isValid method fingerprint failed")
+                    
+                    fallbackResults.filter { method ->
+                        // Additional heuristic: validation methods often check internal state
+                        method.usingFields.isNotEmpty()
+                    }.firstOrNull() ?: throw IllegalStateException("isValid method fingerprint failed")
+                }
                 
                 // Secondary target: Splash activity for comprehensive suppression
                 val splashActivityResults = bridge.findClass {
@@ -90,13 +94,13 @@ class BilibiliHandler : IHook() {
                             add("splash", StringMatchType.Contains)
                         }
                     }
-                }.filter { clazz ->
-                    clazz.className.contains(PATTERN_SPLASH_UI, ignoreCase = true)
                 }
                 
-                val splashActivity = splashActivityResults.firstOrNull()
+                val splashActivity = splashActivityResults.filter { clazz ->
+                    clazz.className.contains(PATTERN_SPLASH_UI, ignoreCase = true)
+                }.firstOrNull()
                 
-                // Build obfuscation mapping table
+                // Build obfuscation mapping table with proper type conversion
                 buildMap {
                     put(KEY_SPLASH_CLASS, splashClass.toObfsInfo())
                     put(KEY_ISVALID_METHOD, isValidMethod.toObfsInfo())
@@ -180,8 +184,8 @@ class BilibiliHandler : IHook() {
     private fun performDirectHook() {
         // Direct hook attempt without ObfsTable (less resilient)
         runCatching {
-            // SAFE CLASS RESOLUTION WITH NULL CHECK
-            val splashClass = findClassN("com.bstar.intl.ui.splash.ad.model.Splash")
+            // SAFE CLASS RESOLUTION WITH CLASSLOADER SCOPE
+            val splashClass = classLoader.findClassN("com.bstar.intl.ui.splash.ad.model.Splash")
                 ?: return@runCatching logE("${this::class.simpleName}: Splash class not found")
             
             // Primary: Hook isValid directly - PROJECT UTILITY
@@ -220,8 +224,8 @@ class BilibiliHandler : IHook() {
             )
             
             for (pkg in packageList) {
-                // SAFE CLASS RESOLUTION WITH PROJECT UTILITY
-                findClassN("$pkg.ad.model.Splash")?.let { splashClass ->
+                // SAFE CLASS RESOLUTION WITH PROJECT METHOD
+                findClassOrNull("$pkg.ad.model.Splash")?.let { splashClass ->
                     splashClass.declaredMethods
                         .filter { it.returnType == Boolean::class.java }
                         .forEach { method ->
