@@ -47,17 +47,18 @@ class BilibiliHandler : IHook() {
         val obfsTable = runCatching {
             createObfsTable("bilibili", TABLE_VERSION) { bridge ->
                 // Find splash model class with multi-criteria fingerprinting
-                val splashClassResults = bridge.findClass {
+                val splashClassList = bridge.findClass {
                     matcher {
                         className = "com.bstar.intl.ui.splash.ad.model.Splash"
                     }
                 }
                 
-                val splashClass = splashClassResults.firstOrNull()
+                // Extract first ClassData from list
+                val splashClass = splashClassList.firstOrNull()
                     ?: throw IllegalStateException("Splash model class fingerprint failed")
                 
                 // Find isValid method with comprehensive criteria
-                val isValidMethodResults = bridge.findMethod {
+                val isValidMethodList = bridge.findMethod {
                     matcher {
                         declaredClass = splashClass.className
                         methodName = "isValid"
@@ -66,9 +67,10 @@ class BilibiliHandler : IHook() {
                     }
                 }
                 
-                val isValidMethod = isValidMethodResults.firstOrNull() ?: run {
+                // Extract first MethodData from list or use fallback
+                val isValidMethod = isValidMethodList.firstOrNull() ?: run {
                     // Fallback: Find by method characteristics
-                    val fallbackResults = bridge.findMethod {
+                    val fallbackList = bridge.findMethod {
                         matcher {
                             declaredClass = splashClass.className
                             returnType = "boolean"
@@ -77,14 +79,15 @@ class BilibiliHandler : IHook() {
                         }
                     }
                     
-                    fallbackResults.filter { method ->
+                    // Filter and extract first matching method
+                    fallbackList.filter { method ->
                         // Heuristic: validation methods check internal state
                         method.usingFields.isNotEmpty()
                     }.firstOrNull() ?: throw IllegalStateException("isValid method fingerprint failed")
                 }
                 
                 // Optional: Find splash activity for additional suppression
-                val splashActivityResults = bridge.findClass {
+                val splashActivityList = bridge.findClass {
                     matcher {
                         superClass = "android.app.Activity"
                         usingStrings {
@@ -93,8 +96,9 @@ class BilibiliHandler : IHook() {
                     }
                 }
                 
-                val splashActivity = splashActivityResults
-                    .filter { it.className.contains("splash", ignoreCase = true) }
+                // Extract activity from list with filtering
+                val splashActivity = splashActivityList
+                    .filter { clazz -> clazz.className.contains("splash", ignoreCase = true) }
                     .firstOrNull()
                 
                 // Build obfuscation mapping table
@@ -144,7 +148,9 @@ class BilibiliHandler : IHook() {
                 
                 // Hook all potential validation methods
                 splashClass.declaredMethods
-                    .filter { it.returnType == Boolean::class.java && it.parameterCount == 0 }
+                    .filter { method -> 
+                        method.returnType == Boolean::class.java && method.parameterCount == 0 
+                    }
                     .forEach { method ->
                         method.hookReplace { _ ->
                             false  // Invalidate all validations
@@ -211,7 +217,9 @@ class BilibiliHandler : IHook() {
             for (pattern in patterns) {
                 findClassOrNull("$pattern.ad.model.Splash")?.let { splashClass ->
                     splashClass.declaredMethods
-                        .filter { it.returnType == Boolean::class.java }
+                        .filter { method ->
+                            method.returnType == Boolean::class.java
+                        }
                         .forEach { method ->
                             method.hookReplace { _ -> false }
                         }
